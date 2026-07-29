@@ -1,7 +1,7 @@
 import { FileDecorationProvider, FileDecoration, Uri, EventEmitter, Event, ThemeColor } from "vscode";
 import { FileStatus, FileStatusType } from "./types";
 import { resolveRev, toJJUri, getParams, type JJUriParams } from "./uri";
-import { normalizePath } from "./utils";
+import { isDescendant, normalizePath } from "./utils";
 
 export function interdiffKey(from: string, to: string): string {
   return `interdiff:${from}..${to}`;
@@ -202,7 +202,11 @@ export class JJDecorationProvider implements FileDecorationProvider {
     const key = getKey(uri.fsPath, rev);
     if (rev === "@" && !this.decorations.has(key)) {
       const fsPath = process.platform === "win32" ? uri.fsPath.toLowerCase() : uri.fsPath;
-      if (!this.trackedFiles.has(fsPath)) {
+
+      const knownRepositoryRoots = [...this.decorationKeysByRepository.keys()];
+      const isFileInAnyRepository = knownRepositoryRoots.some((rootPath) => isDescendant(fsPath, rootPath));
+
+      if (isFileInAnyRepository && !this.trackedFiles.has(fsPath)) {
         return {
           color: new ThemeColor("jjDecoration.ignoredResourceForeground"),
         };
