@@ -120,7 +120,10 @@ export function createPolling(
       logger.error(`Error during background poll: ${String(err)}`);
     } finally {
       if (state.workspaceSCM.repoSCMs.length === 0) {
-        pollTimeoutId = setTimeout(() => void scheduleNextPoll(), 5000);
+        const pollIntervalSeconds = vscode.workspace.getConfiguration("jjx").get<number>("pollIntervalSeconds");
+        if (pollIntervalSeconds !== 0) {
+          pollTimeoutId = setTimeout(() => void scheduleNextPoll(), 5000);
+        }
       } else {
         const pollIntervalSeconds = vscode.workspace.getConfiguration("jjx").get<number>("pollIntervalSeconds");
         if (pollIntervalSeconds !== undefined && pollIntervalSeconds > 0) {
