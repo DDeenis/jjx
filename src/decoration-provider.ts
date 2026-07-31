@@ -120,6 +120,7 @@ export class JJDecorationProvider implements FileDecorationProvider {
     if (!this.hasData) {
       this.hasData = true;
       this.register(this);
+      this.fireChanged(newKeys, new Set());
       return;
     }
 
@@ -251,17 +252,19 @@ export class JJDecorationProvider implements FileDecorationProvider {
   private fireChanged(changedKeys: Set<string>, changedTrackedFiles: Set<string>, invalidateAll = false) {
     if (invalidateAll) {
       this._onDidChangeDecorations.fire(undefined);
-      return;
+      changedKeys = new Set(this.decorations.keys());
+      changedTrackedFiles = new Set();
     }
 
-    const changedUris: Uri[] = [];
+    const changedUris = new Map<string, Uri>();
+    const addUri = (uri: Uri) => changedUris.set(uri.toString(), uri);
     for (const key of changedKeys) {
       const { fsPath, rev } = parseKey(key);
       const interdiff = parseInterdiffRev(rev);
       if (interdiff) {
         // Interdiff resource states are keyed by {interdiffFrom, interdiffTo, side}, so emit
         // those URIs (rather than a synthetic {rev}) so VS Code refreshes their badges.
-        changedUris.push(
+        addUri(
           toJJUri(Uri.file(fsPath), {
             interdiffFrom: interdiff.from,
             interdiffTo: interdiff.to,
@@ -269,16 +272,20 @@ export class JJDecorationProvider implements FileDecorationProvider {
           }),
         );
       } else {
-        changedUris.push(toJJUri(Uri.file(fsPath), { rev }));
+        addUri(toJJUri(Uri.file(fsPath), { rev }));
         if (rev === "@") {
-          changedUris.push(Uri.file(fsPath));
+          addUri(Uri.file(fsPath));
         }
       }
     }
     for (const file of changedTrackedFiles) {
-      changedUris.push(Uri.file(file));
+      addUri(Uri.file(file));
     }
-    this._onDidChangeDecorations.fire(changedUris.length > 250 ? undefined : changedUris);
+
+    const uris = [...changedUris.values()];
+    for (let i = 0; i < uris.length; i += 250) {
+      this._onDidChangeDecorations.fire(uris.slice(i, i + 250));
+    }
   }
 }
 
