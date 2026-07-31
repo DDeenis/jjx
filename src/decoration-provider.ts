@@ -60,6 +60,7 @@ export class JJDecorationProvider implements FileDecorationProvider {
     const repositoryKey = normalizePath(repositoryRoot);
 
     const oldKeys = this.decorationKeysByRepository.get(repositoryKey);
+    const repositoryAdded = oldKeys === undefined;
     const oldBadges = new Map<string, string>();
     if (oldKeys) {
       for (const key of oldKeys) {
@@ -138,8 +139,8 @@ export class JJDecorationProvider implements FileDecorationProvider {
       }
     }
 
-    if (changedKeys.size > 0 || changedTrackedFiles.size > 0) {
-      this.fireChanged(changedKeys, changedTrackedFiles);
+    if (repositoryAdded || changedKeys.size > 0 || changedTrackedFiles.size > 0) {
+      this.fireChanged(changedKeys, changedTrackedFiles, repositoryAdded);
     }
   }
 
@@ -147,6 +148,7 @@ export class JJDecorationProvider implements FileDecorationProvider {
     const activeRepositoryKeys = new Set([...repositoryRoots].map(normalizePath));
     const changedKeys = new Set<string>();
     const changedTrackedFiles = new Set<string>();
+    let repositoryRemoved = false;
 
     for (const repoKey of [...this.decorationKeysByRepository.keys()]) {
       if (activeRepositoryKeys.has(repoKey)) {
@@ -159,6 +161,7 @@ export class JJDecorationProvider implements FileDecorationProvider {
         changedKeys.add(key);
       }
       this.decorationKeysByRepository.delete(repoKey);
+      repositoryRemoved = true;
 
       const tracked = this.trackedFilesByRepository.get(repoKey);
       if (tracked) {
@@ -172,8 +175,8 @@ export class JJDecorationProvider implements FileDecorationProvider {
       }
     }
 
-    if (changedKeys.size > 0 || changedTrackedFiles.size > 0) {
-      this.fireChanged(changedKeys, changedTrackedFiles);
+    if (repositoryRemoved || changedKeys.size > 0 || changedTrackedFiles.size > 0) {
+      this.fireChanged(changedKeys, changedTrackedFiles, repositoryRemoved);
     }
   }
 
@@ -245,7 +248,12 @@ export class JJDecorationProvider implements FileDecorationProvider {
     return false;
   }
 
-  private fireChanged(changedKeys: Set<string>, changedTrackedFiles: Set<string>) {
+  private fireChanged(changedKeys: Set<string>, changedTrackedFiles: Set<string>, invalidateAll = false) {
+    if (invalidateAll) {
+      this._onDidChangeDecorations.fire(undefined);
+      return;
+    }
+
     const changedUris: Uri[] = [];
     for (const key of changedKeys) {
       const { fsPath, rev } = parseKey(key);
