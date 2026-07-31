@@ -204,7 +204,7 @@ export class JJDecorationProvider implements FileDecorationProvider {
       const fsPath = process.platform === "win32" ? uri.fsPath.toLowerCase() : uri.fsPath;
 
       const knownRepositoryRoots = [...this.decorationKeysByRepository.keys()];
-      const isFileInAnyRepository = knownRepositoryRoots.some((rootPath) => isDescendant(fsPath, rootPath));
+      const isFileInAnyRepository = knownRepositoryRoots.some((rootPath) => isDescendant(rootPath, fsPath));
 
       if (isFileInAnyRepository && !this.trackedFiles.has(fsPath)) {
         return {
