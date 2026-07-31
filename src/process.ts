@@ -51,6 +51,15 @@ export function collectProcessOutput(
     const stdout: Buffer[] = [];
     const stderr: Buffer[] = [];
     let settled = false;
+    let cancellationListener: vscode.Disposable | undefined;
+
+    const settle = (callback: () => void) => {
+      if (!settled) {
+        settled = true;
+        cancellationListener?.dispose();
+        callback();
+      }
+    };
 
     childProcess.stdout?.on("data", (data: Buffer) => {
       stdout.push(data);
@@ -61,15 +70,11 @@ export function collectProcessOutput(
     });
 
     childProcess.on("error", (error: Error) => {
-      if (!settled) {
-        settled = true;
-        reject(new Error(`Spawning command failed: ${error.message}`));
-      }
+      settle(() => reject(new Error(`Spawning command failed: ${error.message}`)));
     });
 
     childProcess.on("close", (code, signal) => {
-      if (!settled) {
-        settled = true;
+      settle(() => {
         const stdoutBuf = Buffer.concat(stdout);
         const stderrBuf = Buffer.concat(stderr);
         if (code) {
@@ -79,17 +84,19 @@ export function collectProcessOutput(
         } else {
           resolve({ stdout: stdoutBuf, stderr: stderrBuf });
         }
-      }
+      });
     });
 
     if (token) {
-      token.onCancellationRequested(() => {
-        if (!settled) {
-          settled = true;
+      cancellationListener = token.onCancellationRequested(() => {
+        settle(() => {
           childProcess.kill();
           reject(new CancelledError());
-        }
+        });
       });
+      if (settled) {
+        cancellationListener.dispose();
+      }
     }
   });
 }
