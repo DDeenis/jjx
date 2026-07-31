@@ -486,7 +486,9 @@ class RepositorySourceControlManager {
     );
     this.subscriptions.push(opstoreWatcher);
 
-    const repoWatcher = vscode.workspace.createFileSystemWatcher("**/*");
+    const repoWatcher = vscode.workspace.createFileSystemWatcher(
+      new vscode.RelativePattern(this.repositoryRoot, "**/*"),
+    );
     this.subscriptions.push(repoWatcher);
 
     const opstoreChangedWatchEvent = anyEvent(
