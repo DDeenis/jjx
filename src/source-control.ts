@@ -584,7 +584,6 @@ class RepositorySourceControlManager {
       return;
     }
     if (this.operationId !== latestOperationId) {
-      this.operationId = latestOperationId;
       const status = await this.repository.getStatus(false, token, latestOperationId);
 
       if (token.isCancellationRequested) {
@@ -595,6 +594,7 @@ class RepositorySourceControlManager {
         return;
       }
       this.render();
+      this.operationId = latestOperationId;
 
       this._onDidUpdate.fire({ operationId: latestOperationId });
     }
