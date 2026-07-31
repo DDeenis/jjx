@@ -40,7 +40,7 @@ test("retries a failed state refresh for the same operation", async ({ graphFram
   await testRepo.commitFile("b.txt", "b", "B");
   await waitForFailure(jjWrapper, "status-refresh");
 
-  await runCommand(workbox, "Refresh");
+  await runCommand(workbox, "Jujutsu: Refresh");
 
   await expect(graphFrame.getByText("B", { exact: true })).toBeVisible();
 });
@@ -64,7 +64,7 @@ test("keeps a known repository after a transient discovery failure", async ({
     args: ["--ignore-working-copy", "root"],
     stderr: "injected transient discovery failure",
   });
-  await runCommand(workbox, "Refresh");
+  await runCommand(workbox, "Jujutsu: Refresh");
   await waitForFailure(jjWrapper, "repository-discovery");
 
   const repositoryItem = scmTree.locator('[role="treeitem"][aria-level="1"]').filter({ hasText: repositoryName });
