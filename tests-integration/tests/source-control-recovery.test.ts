@@ -12,6 +12,7 @@ const test = base.extend<RecoveryFixtures>({
     await use({
       "jjx.jjPath": jjWrapper.executablePath,
       "jjx.pollIntervalSeconds": 0,
+      "scm.alwaysShowRepositories": true,
     });
   },
 });
