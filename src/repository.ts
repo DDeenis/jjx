@@ -628,7 +628,12 @@ export class JJRepository {
       .then(() => {});
 
     try {
-      const { leftPath, rightPath } = await pathPromise;
+      const { leftPath, rightPath } = await Promise.race([
+        pathPromise,
+        jjExit.then(() => {
+          throw new Error("jj exited before starting the squash tool");
+        }),
+      ]);
 
       const leftFolderAbsolutePath = path.isAbsolute(leftPath) ? leftPath : path.join(this.repositoryRoot, leftPath);
       const rightFolderAbsolutePath = path.isAbsolute(rightPath)
