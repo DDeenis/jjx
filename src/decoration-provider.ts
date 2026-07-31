@@ -27,8 +27,8 @@ const colorOfType = (type: FileStatusType) => {
 };
 
 export class JJDecorationProvider implements FileDecorationProvider {
-  private readonly _onDidChangeDecorations = new EventEmitter<Uri[]>();
-  readonly onDidChangeFileDecorations: Event<Uri[]> = this._onDidChangeDecorations.event;
+  private readonly _onDidChangeDecorations = new EventEmitter<Uri[] | undefined>();
+  readonly onDidChangeFileDecorations: Event<Uri[] | undefined> = this._onDidChangeDecorations.event;
   private decorations = new Map<string, FileDecoration>();
   private trackedFiles = new Set<string>();
   private decorationKeysByRepository = new Map<string, Set<string>>();
@@ -270,7 +270,7 @@ export class JJDecorationProvider implements FileDecorationProvider {
     for (const file of changedTrackedFiles) {
       changedUris.push(Uri.file(file));
     }
-    this._onDidChangeDecorations.fire(changedUris);
+    this._onDidChangeDecorations.fire(changedUris.length > 250 ? undefined : changedUris);
   }
 }
 
