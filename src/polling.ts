@@ -88,12 +88,18 @@ export function createPolling(
 } {
   const context = state.context;
 
+  let repositoriesAreFresh = state.workspaceSCM.repoSCMs.length > 0;
+
   async function poll() {
-    const didUpdate = await state.workspaceSCM.refresh();
-    if (didUpdate) {
-      const repo = state.getSelectedRepo();
-      if (repo) {
-        state.setSelectedRepo(repo);
+    if (repositoriesAreFresh) {
+      repositoriesAreFresh = false;
+    } else {
+      const didUpdate = await state.workspaceSCM.refresh();
+      if (didUpdate) {
+        const repo = state.getSelectedRepo();
+        if (repo) {
+          state.setSelectedRepo(repo);
+        }
       }
     }
 
