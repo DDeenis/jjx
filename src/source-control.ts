@@ -5,7 +5,7 @@ import * as vscode from "vscode";
 import { resolveRev, toJJUri } from "./uri";
 import { interdiffKey, type JJDecorationProvider } from "./decoration-provider";
 import { logger } from "./logger";
-import { anyEvent, filterEvent, normalizePath } from "./utils";
+import { anyEvent, filterEvent, isDescendant, normalizePath } from "./utils";
 import { JJFileSystemProvider } from "./file-system-provider";
 import { getConfigArgs, getJJPath } from "./config";
 import { collectProcessOutput, spawnJJ, CancelledError } from "./process";
@@ -139,6 +139,7 @@ export class WorkspaceSourceControlManager {
       if (effectiveToken.isCancellationRequested) {
         return false;
       }
+      let probingRoot = false;
       try {
         const jjPath = await getJJPath(workspaceFolder.uri.fsPath);
         if (effectiveToken.isCancellationRequested) {
@@ -150,6 +151,7 @@ export class WorkspaceSourceControlManager {
         }
         const jjConfigArgs = getConfigArgs(extensionDir);
 
+        probingRoot = true;
         let repoRoot = (
           await collectProcessOutput(
             spawnJJ(jjPath.filepath, ["--ignore-working-copy", "root"], {
@@ -161,6 +163,7 @@ export class WorkspaceSourceControlManager {
         ).stdout
           .toString()
           .trim();
+        probingRoot = false;
         try {
           repoRoot = fs.realpathSync.native(repoRoot);
         } catch {
@@ -194,6 +197,13 @@ export class WorkspaceSourceControlManager {
             anyBinaryNotFound = true;
           }
           logger.error(`Error while initializing jjx in workspace ${workspaceFolder.uri.fsPath}: ${String(e)}`);
+          if (probingRoot) {
+            for (const [key, repoInfo] of this.repoInfos) {
+              if (isDescendant(repoInfo.repoRoot, workspaceFolder.uri.fsPath)) {
+                newRepoInfos.set(key, repoInfo);
+              }
+            }
+          }
         }
         continue;
       }
