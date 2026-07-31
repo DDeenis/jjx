@@ -54,10 +54,36 @@ describe("JJDecorationProvider regressions", () => {
     refresh(provider, root, { tracked: [join(root, "tracked.txt")] });
 
     assert.equal(provider.provideFileDecoration(Uri.file(resolve("plain-folder", "file.txt"))), undefined);
-    assert.equal(
-      (provider.provideFileDecoration(Uri.file(join(root, "ignored.txt")))?.color as { id?: string })?.id,
-      "jjDecoration.ignoredResourceForeground",
-    );
+    const ignoredDecoration = provider.provideFileDecoration(Uri.file(join(root, "ignored.txt")));
+    assert.equal((ignoredDecoration?.color as { id?: string })?.id, "jjDecoration.ignoredResourceForeground");
+    assert.equal(ignoredDecoration?.propagate, undefined);
+  });
+
+  it("propagates non-deleted statuses and conflicts to folders", () => {
+    const { provider } = createProvider();
+    const root = resolve("repo");
+    const propagatingTypes = ["A", "M", "R", "C", "X"] as const;
+    const propagatingFiles = propagatingTypes.map((type) => join(root, `${type}.txt`));
+    const deletedFile = join(root, "deleted.txt");
+    const conflictedDeletedFile = join(root, "conflicted-deleted.txt");
+    const conflictOnlyFile = join(root, "conflict-only.txt");
+    const untrackedFile = join(root, "untracked.txt");
+
+    refresh(provider, root, {
+      statuses: [
+        ...propagatingTypes.map((type, index) => status(propagatingFiles[index], type)),
+        status(deletedFile, "D"),
+        status(conflictedDeletedFile, "D"),
+      ],
+      tracked: [...propagatingFiles, deletedFile, conflictedDeletedFile, conflictOnlyFile],
+      conflicts: [conflictedDeletedFile, conflictOnlyFile],
+      untracked: [status(untrackedFile, "?")],
+    });
+
+    for (const file of [...propagatingFiles, conflictedDeletedFile, conflictOnlyFile, untrackedFile]) {
+      assert.equal(provider.provideFileDecoration(Uri.file(file))?.propagate, true);
+    }
+    assert.equal(provider.provideFileDecoration(Uri.file(deletedFile))?.propagate, false);
   });
 
   it("announces decorations on the first repository refresh", () => {

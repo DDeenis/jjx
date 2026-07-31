@@ -81,6 +81,7 @@ export class JJDecorationProvider implements FileDecorationProvider {
           badge: fileStatus.type,
           tooltip: fileStatus.file,
           color: colorOfType(fileStatus.type),
+          propagate: fileStatus.type !== "D",
         });
       }
     }
@@ -93,12 +94,14 @@ export class JJDecorationProvider implements FileDecorationProvider {
           this.decorations.set(key, {
             badge: "!",
             color: new ThemeColor("jjDecoration.conflictingResourceForeground"),
+            propagate: true,
           });
         } else {
           this.decorations.set(key, {
             ...existingDecoration,
             badge: `${existingDecoration.badge}!`,
             color: new ThemeColor("jjDecoration.conflictingResourceForeground"),
+            propagate: true,
           });
         }
       }
@@ -111,6 +114,7 @@ export class JJDecorationProvider implements FileDecorationProvider {
         badge: fileStatus.type,
         tooltip: fileStatus.file,
         color: colorOfType(fileStatus.type),
+        propagate: fileStatus.type !== "D",
       });
     }
 
