@@ -92,12 +92,18 @@ export function createPolling(
 } {
   const context = state.context;
 
+  let repositoriesAreFresh = state.workspaceSCM.repoSCMs.length > 0;
+
   async function poll(forceRefresh: ForceRefresh) {
-    const didUpdate = await state.workspaceSCM.refresh();
-    if (didUpdate) {
-      const repo = state.getSelectedRepo();
-      if (repo) {
-        state.setSelectedRepo(repo);
+    if (repositoriesAreFresh) {
+      repositoriesAreFresh = false;
+    } else {
+      const didUpdate = await state.workspaceSCM.refresh();
+      if (didUpdate) {
+        const repo = state.getSelectedRepo();
+        if (repo) {
+          state.setSelectedRepo(repo);
+        }
       }
     }
 
@@ -118,7 +124,10 @@ export function createPolling(
       logger.error(`Error during background poll: ${String(err)}`);
     } finally {
       if (state.workspaceSCM.repoSCMs.length === 0) {
-        pollTimeoutId = setTimeout(() => void scheduleNextPoll(), 5000);
+        const pollIntervalSeconds = vscode.workspace.getConfiguration("jjx").get<number>("pollIntervalSeconds");
+        if (pollIntervalSeconds !== 0) {
+          pollTimeoutId = setTimeout(() => void scheduleNextPoll(), 5000);
+        }
       } else {
         const pollIntervalSeconds = vscode.workspace.getConfiguration("jjx").get<number>("pollIntervalSeconds");
         if (pollIntervalSeconds !== undefined && pollIntervalSeconds > 0) {

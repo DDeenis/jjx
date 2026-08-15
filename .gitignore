@@ -16,3 +16,4 @@ tests-integration/.vscode-path
 .pnpm-store/
 .tmp/
 package-lock.json
+.omc

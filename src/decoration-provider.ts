@@ -1,7 +1,7 @@
 import { FileDecorationProvider, FileDecoration, Uri, EventEmitter, Event, ThemeColor } from "vscode";
 import { ChangeId, FileStatus, FileStatusType } from "./types";
 import { resolveRev, toJJUri, getParams, type JJUriParams } from "./uri";
-import { normalizePath } from "./utils";
+import { isDescendant, normalizePath } from "./utils";
 
 export function interdiffKey(from: ChangeId, to: ChangeId): string {
   return `interdiff:${JSON.stringify([from, to])}`;
@@ -31,8 +31,8 @@ const colorOfType = (type: FileStatusType) => {
 };
 
 export class JJDecorationProvider implements FileDecorationProvider {
-  private readonly _onDidChangeDecorations = new EventEmitter<Uri[]>();
-  readonly onDidChangeFileDecorations: Event<Uri[]> = this._onDidChangeDecorations.event;
+  private readonly _onDidChangeDecorations = new EventEmitter<Uri[] | undefined>();
+  readonly onDidChangeFileDecorations: Event<Uri[] | undefined> = this._onDidChangeDecorations.event;
   private decorations = new Map<string, FileDecoration>();
   private trackedFiles = new Set<string>();
   private decorationKeysByRepository = new Map<string, Set<string>>();
@@ -64,6 +64,7 @@ export class JJDecorationProvider implements FileDecorationProvider {
     const repositoryKey = normalizePath(repositoryRoot);
 
     const oldKeys = this.decorationKeysByRepository.get(repositoryKey);
+    const repositoryAdded = oldKeys === undefined;
     const oldBadges = new Map<string, string>();
     if (oldKeys) {
       for (const key of oldKeys) {
@@ -84,6 +85,7 @@ export class JJDecorationProvider implements FileDecorationProvider {
           badge: fileStatus.type,
           tooltip: fileStatus.file,
           color: colorOfType(fileStatus.type),
+          propagate: fileStatus.type !== "D",
         });
       }
     }
@@ -96,12 +98,14 @@ export class JJDecorationProvider implements FileDecorationProvider {
           this.decorations.set(key, {
             badge: "!",
             color: new ThemeColor("jjDecoration.conflictingResourceForeground"),
+            propagate: true,
           });
         } else {
           this.decorations.set(key, {
             ...existingDecoration,
             badge: `${existingDecoration.badge}!`,
             color: new ThemeColor("jjDecoration.conflictingResourceForeground"),
+            propagate: true,
           });
         }
       }
@@ -114,6 +118,7 @@ export class JJDecorationProvider implements FileDecorationProvider {
         badge: fileStatus.type,
         tooltip: fileStatus.file,
         color: colorOfType(fileStatus.type),
+        propagate: fileStatus.type !== "D",
       });
     }
 
@@ -123,6 +128,7 @@ export class JJDecorationProvider implements FileDecorationProvider {
     if (!this.hasData) {
       this.hasData = true;
       this.register(this);
+      this.fireChanged(newKeys, new Set());
       return;
     }
 
@@ -142,8 +148,8 @@ export class JJDecorationProvider implements FileDecorationProvider {
       }
     }
 
-    if (changedKeys.size > 0 || changedTrackedFiles.size > 0) {
-      this.fireChanged(changedKeys, changedTrackedFiles);
+    if (repositoryAdded || changedKeys.size > 0 || changedTrackedFiles.size > 0) {
+      this.fireChanged(changedKeys, changedTrackedFiles, repositoryAdded);
     }
   }
 
@@ -151,6 +157,7 @@ export class JJDecorationProvider implements FileDecorationProvider {
     const activeRepositoryKeys = new Set([...repositoryRoots].map(normalizePath));
     const changedKeys = new Set<string>();
     const changedTrackedFiles = new Set<string>();
+    let repositoryRemoved = false;
 
     for (const repoKey of [...this.decorationKeysByRepository.keys()]) {
       if (activeRepositoryKeys.has(repoKey)) {
@@ -163,6 +170,7 @@ export class JJDecorationProvider implements FileDecorationProvider {
         changedKeys.add(key);
       }
       this.decorationKeysByRepository.delete(repoKey);
+      repositoryRemoved = true;
 
       const tracked = this.trackedFilesByRepository.get(repoKey);
       if (tracked) {
@@ -176,8 +184,8 @@ export class JJDecorationProvider implements FileDecorationProvider {
       }
     }
 
-    if (changedKeys.size > 0 || changedTrackedFiles.size > 0) {
-      this.fireChanged(changedKeys, changedTrackedFiles);
+    if (repositoryRemoved || changedKeys.size > 0 || changedTrackedFiles.size > 0) {
+      this.fireChanged(changedKeys, changedTrackedFiles, repositoryRemoved);
     }
   }
 
@@ -209,7 +217,11 @@ export class JJDecorationProvider implements FileDecorationProvider {
     const key = getKey(uri.fsPath, rev);
     if (rev === "@" && !this.decorations.has(key)) {
       const fsPath = process.platform === "win32" ? uri.fsPath.toLowerCase() : uri.fsPath;
-      if (!this.trackedFiles.has(fsPath)) {
+
+      const knownRepositoryRoots = [...this.decorationKeysByRepository.keys()];
+      const isFileInAnyRepository = knownRepositoryRoots.some((rootPath) => isDescendant(rootPath, fsPath));
+
+      if (isFileInAnyRepository && !this.trackedFiles.has(fsPath)) {
         return {
           color: new ThemeColor("jjDecoration.ignoredResourceForeground"),
         };
@@ -248,8 +260,15 @@ export class JJDecorationProvider implements FileDecorationProvider {
     return false;
   }
 
-  private fireChanged(changedKeys: Set<string>, changedTrackedFiles: Set<string>) {
-    const changedUris: Uri[] = [];
+  private fireChanged(changedKeys: Set<string>, changedTrackedFiles: Set<string>, invalidateAll = false) {
+    if (invalidateAll) {
+      this._onDidChangeDecorations.fire(undefined);
+      changedKeys = new Set(this.decorations.keys());
+      changedTrackedFiles = new Set();
+    }
+
+    const changedUris = new Map<string, Uri>();
+    const addUri = (uri: Uri) => changedUris.set(uri.toString(), uri);
     for (const key of changedKeys) {
       const { fsPath, rev } = parseKey(key);
       const comparison = parseComparisonRev(rev);
@@ -261,18 +280,22 @@ export class JJDecorationProvider implements FileDecorationProvider {
           comparison.kind === "interdiff"
             ? { interdiffFrom: comparison.from, interdiffTo: comparison.to, side: "right" as const }
             : { diffFrom: comparison.from, diffTo: comparison.to, side: "right" as const };
-        changedUris.push(toJJUri(Uri.file(fsPath), sideParams));
+        addUri(toJJUri(Uri.file(fsPath), sideParams));
       } else {
-        changedUris.push(toJJUri(Uri.file(fsPath), { rev }));
+        addUri(toJJUri(Uri.file(fsPath), { rev }));
         if (rev === "@") {
-          changedUris.push(Uri.file(fsPath));
+          addUri(Uri.file(fsPath));
         }
       }
     }
     for (const file of changedTrackedFiles) {
-      changedUris.push(Uri.file(file));
+      addUri(Uri.file(file));
     }
-    this._onDidChangeDecorations.fire(changedUris);
+
+    const uris = [...changedUris.values()];
+    for (let i = 0; i < uris.length; i += 250) {
+      this._onDidChangeDecorations.fire(uris.slice(i, i + 250));
+    }
   }
 }
 
