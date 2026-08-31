@@ -54,6 +54,7 @@ export function collectProcessOutput(
     const stderr: Buffer[] = [];
     let settled = false;
     let drainTimer: ReturnType<typeof setTimeout> | null = null;
+    let cancellationListener: vscode.Disposable | undefined;
 
     const cancelDrainTimer = () => {
       if (drainTimer) {
@@ -62,21 +63,27 @@ export function collectProcessOutput(
       }
     };
 
-    const settle = (code: number | null, signal: string | null) => {
-      if (settled) {
-        return;
+    const settle = (callback: () => void) => {
+      if (!settled) {
+        settled = true;
+        cancelDrainTimer();
+        cancellationListener?.dispose();
+        callback();
       }
-      settled = true;
-      cancelDrainTimer();
-      const stdoutBuf = Buffer.concat(stdout);
-      const stderrBuf = Buffer.concat(stderr);
-      if (code) {
-        reject(new ProcessError(code, null, stdoutBuf.toString(), stderrBuf.toString()));
-      } else if (signal) {
-        reject(new ProcessError(null, signal, stdoutBuf.toString(), stderrBuf.toString()));
-      } else {
-        resolve({ stdout: stdoutBuf, stderr: stderrBuf });
-      }
+    };
+
+    const settleProcess = (code: number | null, signal: string | null) => {
+      settle(() => {
+        const stdoutBuf = Buffer.concat(stdout);
+        const stderrBuf = Buffer.concat(stderr);
+        if (code) {
+          reject(new ProcessError(code, null, stdoutBuf.toString(), stderrBuf.toString()));
+        } else if (signal) {
+          reject(new ProcessError(null, signal, stdoutBuf.toString(), stderrBuf.toString()));
+        } else {
+          resolve({ stdout: stdoutBuf, stderr: stderrBuf });
+        }
+      });
     };
 
     childProcess.stdout?.on("data", (data: Buffer) => {
@@ -88,31 +95,28 @@ export function collectProcessOutput(
     });
 
     childProcess.on("error", (error: Error) => {
-      if (!settled) {
-        settled = true;
-        cancelDrainTimer();
-        reject(new Error(`Spawning command failed: ${error.message}`));
-      }
+      settle(() => reject(new Error(`Spawning command failed: ${error.message}`)));
     });
 
     childProcess.on("close", (code, signal) => {
-      settle(code, signal);
+      settleProcess(code, signal);
     });
 
     childProcess.on("exit", (code, signal) => {
       cancelDrainTimer();
-      drainTimer = setTimeout(() => settle(code, signal), STDIO_DRAIN_GRACE_MS);
+      drainTimer = setTimeout(() => settleProcess(code, signal), STDIO_DRAIN_GRACE_MS);
     });
 
     if (token) {
-      token.onCancellationRequested(() => {
-        if (!settled) {
-          settled = true;
-          cancelDrainTimer();
+      cancellationListener = token.onCancellationRequested(() => {
+        settle(() => {
           childProcess.kill();
           reject(new CancelledError());
-        }
+        });
       });
+      if (settled) {
+        cancellationListener.dispose();
+      }
     }
   });
 }

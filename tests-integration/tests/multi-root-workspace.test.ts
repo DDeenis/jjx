@@ -2,12 +2,13 @@ import fs from "fs";
 import os from "os";
 import path from "path";
 import type { Locator, Page } from "@playwright/test";
+import { createJJTestWrapper, type JJTestWrapper, type JJWrapperInvocation } from "../jj-wrapper";
 import { test as base, expect, type TestRepo, newTestRepo } from "./base-test";
 
 // Opens a multi-root workspace with two independent jj repositories so that
 // repository selection across the graph view, operation log view, and SCM view
 // can be exercised.
-const test = base.extend<{ repoA: TestRepo; repoB: TestRepo }>({
+const test = base.extend<{ repoA: TestRepo; repoB: TestRepo; jjWrapper: JJTestWrapper }>({
   repoA: [
     // eslint-disable-next-line no-empty-pattern
     async ({}, use) => {
@@ -28,12 +29,37 @@ const test = base.extend<{ repoA: TestRepo; repoB: TestRepo }>({
     },
     { scope: "test" },
   ],
+  jjWrapper: async ({ cachePath }, use) => {
+    await use(await createJJTestWrapper(cachePath));
+  },
+  customSettings: async ({ jjWrapper }, use) => {
+    await use({
+      "jjx.jjPath": jjWrapper.executablePath,
+      "jjx.pollIntervalSeconds": 0,
+    });
+  },
   workspaceFolders: [
     async ({ repoA, repoB }, use) => {
       await use([repoA.repoPath, repoB.repoPath]);
     },
     { scope: "test" },
   ],
+});
+
+const discoveryTest = test.extend({
+  customSettings: async ({ jjWrapper }, use) => {
+    await jjWrapper.configureBarrier({
+      id: "parallel-discovery",
+      args: ["--ignore-working-copy", "root"],
+      expected: 2,
+      timeoutMs: 10000,
+    });
+    await use({
+      "jjx.commandTimeout": 15000,
+      "jjx.jjPath": jjWrapper.executablePath,
+      "jjx.pollIntervalSeconds": 0,
+    });
+  },
 });
 
 function graphPaneHeader(scmView: Locator): Locator {
@@ -49,6 +75,15 @@ async function openRepoPicker(workbox: Page, paneHeader: Locator): Promise<Locat
   const quickInput = workbox.locator(".quick-input-widget");
   await expect(quickInput).toBeVisible();
   return quickInput;
+}
+
+function isInvocationForRepo(invocation: JJWrapperInvocation, repoPath: string): boolean {
+  const normalize = (value: string) => path.resolve(value).toLowerCase();
+  return invocation.event === "invoke" && normalize(invocation.cwd) === normalize(repoPath);
+}
+
+function containsArgs(args: string[], sequence: string[]): boolean {
+  return args.some((_, start) => sequence.every((value, offset) => args[start + offset] === value));
 }
 
 test("multi-root workspace exposes both repos across the graph, operation log, and source controls", async ({
@@ -115,4 +150,54 @@ test("multi-root workspace exposes both repos across the graph, operation log, a
   await expect(
     scmTree.locator('[role="treeitem"][aria-level="2"]').filter({ hasText: "beta commit one" }),
   ).toBeVisible();
+});
+
+test("does not refresh other repositories for an unrelated file event", async ({
+  jjWrapper,
+  repoA,
+  repoB,
+  scmView,
+}) => {
+  const scmTree = scmView.getByRole("tree", { name: "Source Control Management" });
+  await expect(scmTree.locator('[role="treeitem"][aria-level="1"]')).toHaveCount(2);
+  await expect(async () => {
+    const invocations = await jjWrapper.invocations();
+    for (const repo of [repoA, repoB]) {
+      expect(
+        invocations.some(
+          (entry) => isInvocationForRepo(entry, repo.repoPath) && containsArgs(entry.args, ["file", "list"]),
+        ),
+      ).toBe(true);
+    }
+  }).toPass();
+
+  const baseline = await jjWrapper.invocations();
+  const repoBBaseline = baseline.filter(
+    (entry) => isInvocationForRepo(entry, repoB.repoPath) && containsArgs(entry.args, ["operation", "log"]),
+  ).length;
+
+  await repoA.writeFile("watcher-only.txt", "changed");
+  await expect(scmTree.getByRole("treeitem", { name: /watcher-only\.txt/ })).toBeVisible();
+
+  const after = await jjWrapper.invocations();
+  expect(
+    after.filter(
+      (entry) => isInvocationForRepo(entry, repoB.repoPath) && containsArgs(entry.args, ["operation", "log"]),
+    ),
+  ).toHaveLength(repoBBaseline);
+});
+
+discoveryTest("starts workspace-folder repository probes concurrently", async ({ jjWrapper, workbox }) => {
+  await expect(workbox.locator(".monaco-workbench")).toBeVisible();
+  await expect(async () => {
+    const completions = (await jjWrapper.invocations()).filter(
+      (entry) => entry.event === "barrier-complete" && entry.id === "parallel-discovery",
+    );
+    expect(completions).toHaveLength(2);
+  }).toPass();
+
+  const completions = (await jjWrapper.invocations()).filter(
+    (entry) => entry.event === "barrier-complete" && entry.id === "parallel-discovery",
+  );
+  expect(completions.every((entry) => entry.timedOut === false)).toBe(true);
 });
