@@ -36,6 +36,13 @@ import { TIMEOUTS, MINIMUM_JJ_VERSION, type JJVersion } from "./constants";
 
 const checkedJjVersions = new Map<string, JJVersion | undefined>();
 
+type RepositoryInfo = {
+  jjPath: Awaited<ReturnType<typeof getJJPath>>;
+  jjConfigArgs: string[];
+  repoRoot: RealPath;
+  jjVersion: JJVersion | undefined;
+};
+
 async function checkJJVersion(jjFilepath: string): Promise<JJVersion | undefined> {
   if (checkedJjVersions.has(jjFilepath)) {
     return checkedJjVersions.get(jjFilepath);
@@ -77,15 +84,7 @@ async function checkJJVersion(jjFilepath: string): Promise<JJVersion | undefined
 }
 
 export class WorkspaceSourceControlManager {
-  private repoInfos: Map<
-    string,
-    {
-      jjPath: Awaited<ReturnType<typeof getJJPath>>;
-      jjConfigArgs: string[];
-      repoRoot: RealPath;
-      jjVersion: JJVersion | undefined;
-    }
-  > = new Map();
+  private repoInfos = new Map<string, RepositoryInfo>();
   repoSCMs: RepositorySourceControlManager[] = [];
   subscriptions: {
     dispose(): unknown;
@@ -143,33 +142,29 @@ export class WorkspaceSourceControlManager {
   async refresh(token?: vscode.CancellationToken) {
     const effectiveToken = token ?? this.cancellationTokenSource.token;
 
-    const newRepoInfos = new Map<
-      string,
-      {
-        jjPath: Awaited<ReturnType<typeof getJJPath>>;
-        jjConfigArgs: string[];
-        repoRoot: RealPath;
-        jjVersion: JJVersion | undefined;
-      }
-    >();
+    const newRepoInfos = new Map<string, RepositoryInfo>();
     let anyBinaryNotFound = false;
-    for (const workspaceFolder of vscode.workspace.workspaceFolders || []) {
-      if (effectiveToken.isCancellationRequested) {
-        return false;
-      }
+    const discoveries = (vscode.workspace.workspaceFolders || []).map(async (workspaceFolder) => {
+      const repositories: [string, RepositoryInfo][] = [];
+      let probingRoot = false;
+      let binaryNotFound = false;
       try {
+        if (effectiveToken.isCancellationRequested) {
+          return { cancelled: true, binaryNotFound, repositories };
+        }
         const jjPath = await getJJPath(workspaceFolder.uri.fsPath);
         if (effectiveToken.isCancellationRequested) {
-          return false;
+          return { cancelled: true, binaryNotFound, repositories };
         }
         const jjVersion = await checkJJVersion(jjPath.filepath);
         if (effectiveToken.isCancellationRequested) {
-          return false;
+          return { cancelled: true, binaryNotFound, repositories };
         }
         const jjConfigArgs = getConfigArgs(extensionDir);
 
-        // jj reports the root in its resolved spelling; resolveRepositoryPath keeps that
-        // spelling while resolving any symlinks the workspace folder was opened through.
+        probingRoot = true;
+        // jj reports root in resolved spelling; resolveRepositoryPath keeps that spelling while
+        // resolving symlinks workspace folder was opened through.
         const repoRoot = resolveRepositoryPath(
           (
             await collectProcessOutput(
@@ -183,36 +178,45 @@ export class WorkspaceSourceControlManager {
             .toString()
             .trim(),
         );
+        probingRoot = false;
         if (effectiveToken.isCancellationRequested) {
-          return false;
+          return { cancelled: true, binaryNotFound, repositories };
         }
 
         const repoUri = vscode.Uri.file(repoRoot.replace(/^\\\\\?\\UNC\\/, "\\\\")).toString();
-
-        if (!newRepoInfos.has(repoUri)) {
-          newRepoInfos.set(repoUri, {
-            jjPath,
-            jjConfigArgs,
-            repoRoot,
-            jjVersion,
-          });
-        }
+        repositories.push([repoUri, { jjPath, jjConfigArgs, repoRoot, jjVersion }]);
       } catch (e) {
         if (e instanceof CancelledError) {
-          return false;
+          return { cancelled: true, binaryNotFound, repositories };
         }
         if (e instanceof Error && e.message.includes("no jj repo in")) {
           logger.debug(`No jj repo in ${workspaceFolder.uri.fsPath}`);
         } else {
-          if (
+          binaryNotFound =
             e instanceof Error &&
-            (e.message.includes("jj CLI not found") || e.message.includes("jjx.jjPath is not an executable"))
-          ) {
-            anyBinaryNotFound = true;
-          }
+            (e.message.includes("jj CLI not found") || e.message.includes("jjx.jjPath is not an executable"));
           logger.error(`Error while initializing jjx in workspace ${workspaceFolder.uri.fsPath}: ${String(e)}`);
+          if (probingRoot) {
+            for (const [key, repoInfo] of this.repoInfos) {
+              if (isDescendant(repoInfo.repoRoot, workspaceFolder.uri.fsPath)) {
+                repositories.push([key, repoInfo]);
+              }
+            }
+          }
         }
-        continue;
+      }
+      return { cancelled: false, binaryNotFound, repositories };
+    });
+
+    for (const discovery of await Promise.all(discoveries)) {
+      if (discovery.cancelled) {
+        return false;
+      }
+      anyBinaryNotFound ||= discovery.binaryNotFound;
+      for (const [key, repoInfo] of discovery.repositories) {
+        if (!newRepoInfos.has(key)) {
+          newRepoInfos.set(key, repoInfo);
+        }
       }
     }
 
@@ -512,7 +516,9 @@ class RepositorySourceControlManager {
     );
     this.subscriptions.push(opstoreWatcher);
 
-    const repoWatcher = vscode.workspace.createFileSystemWatcher("**/*");
+    const repoWatcher = vscode.workspace.createFileSystemWatcher(
+      new vscode.RelativePattern(this.repositoryRoot, "**/*"),
+    );
     this.subscriptions.push(repoWatcher);
 
     const opstoreChangedWatchEvent = anyEvent(
@@ -662,8 +668,6 @@ class RepositorySourceControlManager {
         return;
       }
       this.render();
-      // Commit the operation id only after the refresh completed so a cancelled refresh (e.g.
-      // watchdog aborted) retries the same operation on the next poll.
       this.operationId = latestOperationId;
 
       this._onDidUpdate.fire({ operationId: latestOperationId });
