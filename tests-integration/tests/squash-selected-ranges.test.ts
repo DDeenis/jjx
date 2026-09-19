@@ -1,13 +1,6 @@
 import { test, expect, mod, cursorTop, runCommand } from "./base-test";
 
-test("squash selected line ranges into parent change", async ({ graphFrame, testRepo, workbox }) => {
-  await testRepo.commitFile("a.txt", "line1\nline2\nline3\n", "A");
-  await testRepo.writeFile("a.txt", "line1\nMODIFIED\nline3\nADDED\n");
-
-  await expect(graphFrame.locator("#nodes > div")).toHaveCount(3);
-  await expect(graphFrame.locator("#nodes > div").first()).not.toHaveText(/\(empty\)/);
-
-  // Open a.txt in a regular editor via Quick Open
+async function openFileAndSelectFourthLine(workbox: Parameters<typeof runCommand>[0]) {
   await workbox.keyboard.press(`${mod}+p`);
   const quickOpen = workbox.locator(".quick-input-widget");
   await expect(quickOpen).toBeVisible();
@@ -19,14 +12,22 @@ test("squash selected line ranges into parent change", async ({ graphFrame, test
   const editor = workbox.locator('.monaco-editor[role="code"][data-uri^="file://"]');
   await expect(editor).toBeVisible();
   await editor.click();
-
-  // Navigate to line 4 ("ADDED") and select it
   await workbox.keyboard.press(cursorTop);
   await workbox.keyboard.press("ArrowDown");
   await workbox.keyboard.press("ArrowDown");
   await workbox.keyboard.press("ArrowDown");
   await workbox.keyboard.press("Home");
   await workbox.keyboard.press("Shift+End");
+}
+
+test("squash selected line ranges into parent change", async ({ graphFrame, testRepo, workbox }) => {
+  await testRepo.commitFile("a.txt", "line1\nline2\nline3\n", "A");
+  await testRepo.writeFile("a.txt", "line1\nMODIFIED\nline3\nADDED\n");
+
+  await expect(graphFrame.locator("#nodes > div")).toHaveCount(3);
+  await expect(graphFrame.locator("#nodes > div").first()).not.toHaveText(/\(empty\)/);
+
+  await openFileAndSelectFourthLine(workbox);
 
   // Trigger "Squash Selected Changes..." via command palette
   await runCommand(workbox, "Squash Selected Changes");
@@ -57,4 +58,28 @@ test("squash selected line ranges into parent change", async ({ graphFrame, test
     const diffResult = await testRepo.jjCommand(["diff", "--name-only", "-r", "@-"]);
     expect(diffResult.stdout.trim()).toBe("a.txt");
   }).toPass();
+});
+
+test("surfaces immutable parent errors when jj exits before starting the squash tool", async ({
+  graphFrame,
+  testRepo,
+  workbox,
+}) => {
+  const parentChangeId = await testRepo.commitFile("a.txt", "line1\nline2\nline3\n", "A");
+  const tagResult = await testRepo.createTag("immutable-parent", parentChangeId);
+  expect(tagResult.exitCode).toBe(0);
+  await testRepo.writeFile("a.txt", "line1\nMODIFIED\nline3\nADDED\n");
+  await expect(graphFrame.locator("#nodes > div").first()).not.toHaveText(/\(empty\)/);
+  await openFileAndSelectFourthLine(workbox);
+
+  await runCommand(workbox, "Squash Selected Changes");
+  const parentItem = workbox
+    .locator(".quick-input-widget .monaco-list-row")
+    .filter({ hasText: /Parent/ })
+    .first();
+  await expect(parentItem).toBeVisible();
+  await parentItem.click();
+
+  await expect(workbox.getByRole("option", { name: "Continue", exact: true })).toBeVisible();
+  await workbox.keyboard.press("Escape");
 });
