@@ -314,10 +314,8 @@ export class JJRepository {
   /**
    * Runs an unpinned read with central handling of divergent operation heads. The read is first
    * attempted at --at-operation=@ (see spawnJJRead), which never writes an operation. If the heads
-   * are divergent, the read is retried after a jittered backoff — usually another process sharing
-   * the repository will have reconciled by then, so this instance writes nothing. If the heads are
-   * still divergent after the retry, exactly one reconcile is performed by issuing the read without
-   * --at-operation, which makes jj merge the divergent heads into a new operation.
+   * are divergent, the read is retried after a jittered backoff. It never reconciles: a read from
+   * the extension must not mutate repository state or race an external jj command.
    */
   private runReadWithDivergenceHandling(
     args: string[],
@@ -332,6 +330,8 @@ export class JJRepository {
         return handleJJCommand(this.spawnJJ(["--ignore-working-copy", ...args], spawnOpts), token);
       },
       (maxDelayMs) => this.jitteredDelay(maxDelayMs, token),
+      1,
+      { reconcile: false },
     );
   }
 
@@ -349,8 +349,8 @@ export class JJRepository {
    * operation to the log, in which case it will return the new operation id.
    *
    * The command is run with `--at-operation=@` first, which loads the current operation head without reconciling
-   * divergent operation heads (reconciliation writes a new operation, which can cascade when several instances share
-   * the repository). If the heads have diverged, withDivergenceHandling backs off and retries before reconciling.
+   * divergent operation heads. If the heads have diverged, it backs off and retries, then leaves reconciliation to an
+   * explicit mutating jj command. Background refreshes must not write repository state.
    */
   async getLatestOperationId(ignoreWorkingCopy: boolean = true, token?: vscode.CancellationToken) {
     const args = ["operation", "log", "--limit", "1", "-T", "self.id()", "--no-graph"];
@@ -362,6 +362,8 @@ export class JJRepository {
       () => handleJJCommand(this.spawnJJ(attemptArgs, { cwd: this.repositoryRoot }), token),
       () => handleJJCommand(this.spawnJJ(reconcileArgs, { cwd: this.repositoryRoot }), token),
       (maxDelayMs) => this.jitteredDelay(maxDelayMs, token),
+      1,
+      { reconcile: false },
     );
     const operationId = buf.toString().trim();
     this.lastKnownOperationId = operationId;
@@ -2179,6 +2181,8 @@ export class JJRepository {
       () => run((args, options) => this.spawnJJRead(args, options)),
       () => run((args, options) => this.spawnJJ(["--ignore-working-copy", ...args], options)),
       (maxDelayMs) => this.jitteredDelay(maxDelayMs),
+      1,
+      { reconcile: false },
     );
   }
 }

@@ -14,7 +14,7 @@ before(async () => {
 });
 
 describe("createPolling regressions", () => {
-  it("does not schedule another probe when polling is disabled and no repositories exist", async () => {
+  it("does not schedule another probe when polling is disabled and no repositories exist", () => {
     const subscriptions: { dispose(): unknown }[] = [];
     const state = {
       context: { subscriptions },
@@ -40,7 +40,7 @@ describe("createPolling regressions", () => {
 
     try {
       const polling = createPolling(state, () => Promise.resolve());
-      await polling.scheduleNextPoll();
+      polling.scheduleNextPoll();
       assert.deepEqual(scheduledDelays, []);
     } finally {
       subscriptions.forEach((subscription) => subscription.dispose());

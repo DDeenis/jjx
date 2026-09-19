@@ -1,5 +1,7 @@
 import { EventEmitter, TreeDataProvider, TreeItem, Event, TreeView, window, MarkdownString } from "vscode";
 import { JJRepository, Operation } from "./repository";
+import { DivergentOperationsError } from "./errors";
+import { logger } from "./logger";
 import path from "path";
 
 export class OperationLogManager {
@@ -64,7 +66,16 @@ export class OperationLogTreeDataProvider implements TreeDataProvider<unknown> {
       return;
     }
     const repo = this.selectedRepository;
-    const operationId = providedOperationId ?? (await repo.getLatestOperationId(false));
+    let operationId: string;
+    try {
+      operationId = providedOperationId ?? (await repo.getLatestOperationId(false));
+    } catch (error) {
+      if (error instanceof DivergentOperationsError) {
+        logger.info("Skipping operation log refresh while operations diverge");
+        return;
+      }
+      throw error;
+    }
     const prev = this.operationTreeItems;
     const operations = await repo.operationLog(operationId);
     this.operationTreeItems = operations.map((op) => new OperationTreeItem(op, repo.repositoryRoot));

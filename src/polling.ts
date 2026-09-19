@@ -145,13 +145,13 @@ export function createPolling(
     });
     // Re-arm immediately instead of after the poll settles: a poll stuck on a stalled jj
     // subprocess must not stop future ticks. Overlapping ticks are coalesced by the throttle.
+    const pollIntervalSeconds = vscode.workspace.getConfiguration("jjx").get<number>("pollIntervalSeconds");
     if (state.workspaceSCM.repoSCMs.length === 0) {
-      pollTimeoutId = setTimeout(scheduleNextPoll, 5000);
-    } else {
-      const pollIntervalSeconds = vscode.workspace.getConfiguration("jjx").get<number>("pollIntervalSeconds");
-      if (pollIntervalSeconds !== undefined && pollIntervalSeconds > 0) {
-        pollTimeoutId = setTimeout(scheduleNextPoll, pollIntervalSeconds * 1000);
+      if (pollIntervalSeconds !== 0) {
+        pollTimeoutId = setTimeout(scheduleNextPoll, 5000);
       }
+    } else if (pollIntervalSeconds !== undefined && pollIntervalSeconds > 0) {
+      pollTimeoutId = setTimeout(scheduleNextPoll, pollIntervalSeconds * 1000);
     }
   };
 

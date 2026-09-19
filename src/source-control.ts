@@ -20,7 +20,7 @@ import { getConfigArgs, getJJPath } from "./config";
 import { collectProcessOutput, spawnJJ, CancelledError } from "./process";
 import { extensionDir } from "./config";
 import { JJRepository } from "./repository";
-import { StaleWorkingCopyError } from "./errors";
+import { DivergentOperationsError, StaleWorkingCopyError } from "./errors";
 import type {
   ChangeId,
   FileStatus,
@@ -638,6 +638,10 @@ class RepositorySourceControlManager {
       this.repository.resetAutoUpdateStaleAttempted();
     } catch (error) {
       if (error instanceof CancelledError) {
+        return;
+      }
+      if (error instanceof DivergentOperationsError) {
+        logger.info(`Skipping repository refresh while operations diverge: ${this.repositoryRoot}`);
         return;
       }
       if (error instanceof StaleWorkingCopyError) {
