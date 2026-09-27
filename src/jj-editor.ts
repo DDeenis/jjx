@@ -195,6 +195,7 @@ export function completeSquashToolRequest(requestId: string, success: boolean): 
   const pending = pendingSquashRequests.get(requestId);
   if (pending) {
     pending.complete(success);
+    pendingSquashRequests.delete(requestId);
   }
 }
 

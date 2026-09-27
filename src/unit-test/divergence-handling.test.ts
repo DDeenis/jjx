@@ -77,6 +77,24 @@ describe("withDivergenceHandling Test Suite", () => {
     assert.equal(reconciled, true);
   });
 
+  it("does not reconcile when background work remains divergent", async () => {
+    let reconciled = false;
+    await assert.rejects(
+      withDivergenceHandling(
+        divergent,
+        () => {
+          reconciled = true;
+          return Promise.resolve("reconciled");
+        },
+        () => Promise.resolve(),
+        1,
+        { reconcile: false },
+      ),
+      DivergentOperationsError,
+    );
+    assert.equal(reconciled, false);
+  });
+
   it("propagates non-divergence errors immediately without retry", async () => {
     let attempts = 0;
     const otherError = new Error("something else");

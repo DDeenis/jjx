@@ -1,7 +1,7 @@
 import * as vscode from "vscode";
 import * as fs from "fs";
 import type { JJRepository, LogEntry, ParentRef } from "./repository";
-import { BookmarkBackwardsError, StaleWorkingCopyError } from "./errors";
+import { BookmarkBackwardsError, DivergentOperationsError, StaleWorkingCopyError } from "./errors";
 import { CancelledError } from "./process";
 import path from "path";
 import { showErrorMessage } from "./vscode-utils";
@@ -1033,6 +1033,10 @@ export class JJGraphWebview implements vscode.WebviewViewProvider {
         // best effort — don't let cache update failure affect the graph
       }
     } catch (error) {
+      if (error instanceof DivergentOperationsError) {
+        logger.info("Skipping graph refresh while operations diverge");
+        return;
+      }
       if (error instanceof StaleWorkingCopyError) {
         const didAutoUpdate = await this.repository.tryAutoUpdateStale();
         if (didAutoUpdate) {

@@ -16,12 +16,16 @@ import { DIVERGENCE_BACKOFF } from "./constants";
  * gives a single ~BASE_MS backoff (~250 ms), keeping user-visible latency low while still letting
  * another process reconcile first. Higher values add exponential backoff (BASE_MS * 2^i) for
  * scenarios where simultaneous collisions are likely.
+ *
+ * Set `reconcile` to false for background work. A UI refresh must never mutate repository state:
+ * it retries, then reports divergence for a later poll to handle.
  */
 export async function withDivergenceHandling<T>(
   attempt: () => Promise<T>,
   reconcile: () => Promise<T>,
   delay: (maxDelayMs: number) => Promise<void>,
   maxRetries: number = 1,
+  options: { reconcile?: boolean } = {},
 ): Promise<T> {
   for (let i = 0; ; i++) {
     try {
@@ -30,9 +34,12 @@ export async function withDivergenceHandling<T>(
       if (!(e instanceof DivergentOperationsError)) {
         throw e;
       }
-    }
-    if (i >= maxRetries) {
-      return reconcile();
+      if (i >= maxRetries) {
+        if (options.reconcile === false) {
+          throw e;
+        }
+        return reconcile();
+      }
     }
     const maxDelay = Math.min(DIVERGENCE_BACKOFF.CAP_MS, DIVERGENCE_BACKOFF.BASE_MS * 2 ** i);
     await delay(maxDelay);

@@ -1,7 +1,7 @@
 import { FileDecorationProvider, FileDecoration, Uri, EventEmitter, Event, ThemeColor } from "vscode";
 import { ChangeId, FileStatus, FileStatusType, NormalizedPath, type RealPath } from "./types";
 import { resolveRev, toJJUri, getParams, type JJUriParams } from "./uri";
-import { normalizePath } from "./utils";
+import { isDescendant, normalizePath } from "./utils";
 import { asRealPath, toRealPathSpelling, toWorkspaceSpelling } from "./workspace-paths";
 
 /**
@@ -37,8 +37,8 @@ const colorOfType = (type: FileStatusType) => {
 };
 
 export class JJDecorationProvider implements FileDecorationProvider {
-  private readonly _onDidChangeDecorations = new EventEmitter<Uri[]>();
-  readonly onDidChangeFileDecorations: Event<Uri[]> = this._onDidChangeDecorations.event;
+  private readonly _onDidChangeDecorations = new EventEmitter<Uri[] | undefined>();
+  readonly onDidChangeFileDecorations: Event<Uri[] | undefined> = this._onDidChangeDecorations.event;
   private decorations = new Map<DecorationKey, FileDecoration>();
   private trackedFiles = new Set<NormalizedPath>();
   private decorationKeysByRepository = new Map<NormalizedPath, Set<DecorationKey>>();
@@ -66,6 +66,7 @@ export class JJDecorationProvider implements FileDecorationProvider {
     const repositoryKey = normalizePath(repositoryRoot);
 
     const oldKeys = this.decorationKeysByRepository.get(repositoryKey);
+    const repositoryAdded = oldKeys === undefined;
     const oldBadges = new Map<DecorationKey, string>();
     if (oldKeys) {
       for (const key of oldKeys) {
@@ -86,31 +87,27 @@ export class JJDecorationProvider implements FileDecorationProvider {
           badge: fileStatus.type,
           tooltip: fileStatus.file,
           color: colorOfType(fileStatus.type),
+          propagate: fileStatus.type !== "D",
         });
       }
     }
-    for (const [changeId, fileStatuses] of fileStatusesByChange) {
-      const files = conflictedFiles.get(changeId);
-      if (!files) {
-        continue;
-      }
-      for (const fileStatus of fileStatuses) {
-        if (!files.has(normalizePath(fileStatus.path))) {
-          continue;
-        }
-        const key = getKey(asRealPath(Uri.file(fileStatus.path).fsPath), changeId);
+    for (const [changeId, files] of conflictedFiles) {
+      for (const file of files) {
+        const key = getKey(asRealPath(file), changeId);
         const existingDecoration = this.decorations.get(key);
         if (!existingDecoration) {
           newKeys.add(key);
           this.decorations.set(key, {
             badge: "!",
             color: new ThemeColor("jjDecoration.conflictingResourceForeground"),
+            propagate: true,
           });
         } else {
           this.decorations.set(key, {
             ...existingDecoration,
             badge: `${existingDecoration.badge}!`,
             color: new ThemeColor("jjDecoration.conflictingResourceForeground"),
+            propagate: true,
           });
         }
       }
@@ -123,6 +120,7 @@ export class JJDecorationProvider implements FileDecorationProvider {
         badge: fileStatus.type,
         tooltip: fileStatus.file,
         color: colorOfType(fileStatus.type),
+        propagate: fileStatus.type !== "D",
       });
     }
 
@@ -132,6 +130,7 @@ export class JJDecorationProvider implements FileDecorationProvider {
     if (!this.hasData) {
       this.hasData = true;
       this.register(this);
+      this.fireChanged(newKeys, new Set());
       return;
     }
 
@@ -151,8 +150,8 @@ export class JJDecorationProvider implements FileDecorationProvider {
       }
     }
 
-    if (changedKeys.size > 0 || changedTrackedFiles.size > 0) {
-      this.fireChanged(changedKeys, changedTrackedFiles);
+    if (repositoryAdded || changedKeys.size > 0 || changedTrackedFiles.size > 0) {
+      this.fireChanged(changedKeys, changedTrackedFiles, repositoryAdded);
     }
   }
 
@@ -160,6 +159,7 @@ export class JJDecorationProvider implements FileDecorationProvider {
     const activeRepositoryKeys = new Set([...repositoryRoots].map(normalizePath));
     const changedKeys = new Set<DecorationKey>();
     const changedTrackedFiles = new Set<NormalizedPath>();
+    let repositoryRemoved = false;
 
     for (const repoKey of [...this.decorationKeysByRepository.keys()]) {
       if (activeRepositoryKeys.has(repoKey)) {
@@ -172,6 +172,7 @@ export class JJDecorationProvider implements FileDecorationProvider {
         changedKeys.add(key);
       }
       this.decorationKeysByRepository.delete(repoKey);
+      repositoryRemoved = true;
 
       const tracked = this.trackedFilesByRepository.get(repoKey);
       if (tracked) {
@@ -185,8 +186,8 @@ export class JJDecorationProvider implements FileDecorationProvider {
       }
     }
 
-    if (changedKeys.size > 0 || changedTrackedFiles.size > 0) {
-      this.fireChanged(changedKeys, changedTrackedFiles);
+    if (repositoryRemoved || changedKeys.size > 0 || changedTrackedFiles.size > 0) {
+      this.fireChanged(changedKeys, changedTrackedFiles, repositoryRemoved);
     }
   }
 
@@ -220,7 +221,12 @@ export class JJDecorationProvider implements FileDecorationProvider {
     }
     const key = getKey(fsPath, rev);
     if (rev === "@" && !this.decorations.has(key)) {
-      if (!this.trackedFiles.has(normalizePath(fsPath))) {
+      const normalizedFsPath = normalizePath(fsPath);
+      const isFileInAnyRepository = [...this.decorationKeysByRepository.keys()].some((rootPath) =>
+        isDescendant(rootPath, normalizedFsPath),
+      );
+
+      if (isFileInAnyRepository && !this.trackedFiles.has(normalizedFsPath)) {
         return {
           color: new ThemeColor("jjDecoration.ignoredResourceForeground"),
         };
@@ -259,14 +265,26 @@ export class JJDecorationProvider implements FileDecorationProvider {
     return false;
   }
 
-  private fireChanged(changedKeys: Set<DecorationKey>, changedTrackedFiles: Set<NormalizedPath>) {
-    const changedUris: Uri[] = [];
-    // URIs are keyed by resolved repository paths, but VS Code may know the same file under the
-    // workspace folder's path spelling, so decoration changes are announced for both.
+  private fireChanged(
+    changedKeys: Set<DecorationKey>,
+    changedTrackedFiles: Set<NormalizedPath>,
+    invalidateAll = false,
+  ) {
+    if (invalidateAll) {
+      this._onDidChangeDecorations.fire(undefined);
+      changedKeys = new Set(this.decorations.keys());
+      changedTrackedFiles = new Set();
+    }
+
+    const changedUris = new Map<string, Uri>();
+    const addUri = (uri: Uri) => changedUris.set(uri.toString(), uri);
+    // URIs are keyed by resolved repository paths, but VS Code may know same file under workspace
+    // folder's path spelling, so decoration changes are announced for both.
     const spellings = (fsPath: string): string[] => {
       const workspacePath = toWorkspaceSpelling(fsPath);
       return workspacePath === fsPath ? [fsPath] : [fsPath, workspacePath];
     };
+
     for (const key of changedKeys) {
       const { fsPath, rev } = parseKey(key);
       const comparison = parseComparisonRev(rev);
@@ -279,21 +297,25 @@ export class JJDecorationProvider implements FileDecorationProvider {
             comparison.kind === "interdiff"
               ? { interdiffFrom: comparison.from, interdiffTo: comparison.to, side: "right" as const }
               : { diffFrom: comparison.from, diffTo: comparison.to, side: "right" as const };
-          changedUris.push(toJJUri(Uri.file(spelling), sideParams));
+          addUri(toJJUri(Uri.file(spelling), sideParams));
         } else {
-          changedUris.push(toJJUri(Uri.file(spelling), { rev }));
+          addUri(toJJUri(Uri.file(spelling), { rev }));
           if (rev === "@") {
-            changedUris.push(Uri.file(spelling));
+            addUri(Uri.file(spelling));
           }
         }
       }
     }
     for (const file of changedTrackedFiles) {
       for (const spelling of spellings(file)) {
-        changedUris.push(Uri.file(spelling));
+        addUri(Uri.file(spelling));
       }
     }
-    this._onDidChangeDecorations.fire(changedUris);
+
+    const uris = [...changedUris.values()];
+    for (let i = 0; i < uris.length; i += 250) {
+      this._onDidChangeDecorations.fire(uris.slice(i, i + 250));
+    }
   }
 }
 
